@@ -65,12 +65,12 @@ impl Dir {
 
 			Ok(("text/html".into(), html.into()))
 		} else {
-			let content = self
+			let (mime, content) = self
 				.handle_non_md(path)
 				.await
 				.with_context(|| format!("while handling {} as non md", path.display()))?;
 
-			Ok(("todo not-yet-known".into(), content))
+			Ok((mime, content))
 		}
 	}
 
@@ -86,12 +86,16 @@ impl Dir {
 
 		Ok(html)
 	}
-	async fn handle_non_md(&self, path: &Path) -> anyhow::Result<Vec<u8>> {
+	async fn handle_non_md(&self, path: &Path) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
 		let joined = join_without_escape(&self.path, path)?;
+
+		let mime = mime_guess::from_path(path).first_or_octet_stream();
+		let mime = mime.essence_str();
 
 		let content = tokio::fs::read(&joined)
 			.await
 			.with_context(|| format!("while reading {} as binary", path.display()))?;
-		Ok(content)
+
+		Ok((mime.to_string().into(), content))
 	}
 }
