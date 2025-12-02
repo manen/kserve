@@ -47,10 +47,13 @@ impl Dir {
 	pub async fn md_to_html(&self, path: &Path) -> anyhow::Result<String> {
 		let joined = join_without_escape(&self.path, path)?;
 
-		let s = tokio::fs::read_to_string(&joined)
+		let md = tokio::fs::read_to_string(&joined)
 			.await
 			.with_context(|| format!("while reading {}", path.display()))?;
 
-		Ok(s)
+		let opts = comrak::Options::default();
+		let html = comrak::markdown_to_html(&md, &opts);
+
+		Ok(html)
 	}
 }
