@@ -20,10 +20,10 @@ async fn index() -> impl Responder {
 async fn root_fallback(path: web::Path<String>, dir: web::Data<Dir>) -> HttpResponse {
 	let path = path.into_inner();
 	let path = PathBuf::from(path);
-	let res = dir.md_to_html(&path).await;
+	let res = dir.handle_file(&path).await;
 
 	match res {
-		Ok(a) => HttpResponse::Ok().content_type("text/html").body(a),
+		Ok((mime, a)) => HttpResponse::Ok().content_type(mime.as_ref()).body(a),
 		Err(err) => {
 			let err = format!("{err}\n\n{err:#?}");
 			HttpResponse::BadRequest().body(err)

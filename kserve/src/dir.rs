@@ -1,4 +1,7 @@
-use std::path::{Component, Path, PathBuf};
+use std::{
+	borrow::Cow,
+	path::{Component, Path, PathBuf},
+};
 
 use anyhow::Context;
 
@@ -44,16 +47,51 @@ impl Dir {
 		Self { path }
 	}
 
-	pub async fn md_to_html(&self, path: &Path) -> anyhow::Result<String> {
+	/// returns (mime, content)
+	pub async fn handle_file(&self, path: &Path) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
+		// return Ok(("text/plain".into(), format!("{}", path.display()).into()));
+
+		let handle_as_md = path
+			.extension()
+			.map(|a| a.to_string_lossy() == "md")
+			.unwrap_or(false);
+
+		println!("{}: {handle_as_md}", path.display()); // ts dont work
+		if handle_as_md {
+			let html = self
+				.handle_md(path)
+				.await
+				.with_context(|| format!("while handling {} as markdown", path.display()))?;
+
+			Ok(("text/html".into(), html.into()))
+		} else {
+			let content = self
+				.handle_non_md(path)
+				.await
+				.with_context(|| format!("while handling {} as non md", path.display()))?;
+
+			Ok(("todo not-yet-known".into(), content))
+		}
+	}
+
+	async fn handle_md(&self, path: &Path) -> anyhow::Result<String> {
 		let joined = join_without_escape(&self.path, path)?;
 
 		let md = tokio::fs::read_to_string(&joined)
 			.await
-			.with_context(|| format!("while reading {}", path.display()))?;
+			.with_context(|| format!("while reading {} as string", path.display()))?;
 
 		let opts = comrak::Options::default();
 		let html = comrak::markdown_to_html(&md, &opts);
 
 		Ok(html)
+	}
+	async fn handle_non_md(&self, path: &Path) -> anyhow::Result<Vec<u8>> {
+		let joined = join_without_escape(&self.path, path)?;
+
+		let content = tokio::fs::read(&joined)
+			.await
+			.with_context(|| format!("while reading {} as binary", path.display()))?;
+		Ok(content)
 	}
 }
