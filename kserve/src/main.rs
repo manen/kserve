@@ -52,6 +52,9 @@ async fn main() -> anyhow::Result<()> {
 		.map(|s| Ok(PathBuf::from(s)))
 		.unwrap_or_else(std::env::current_dir)
 		.with_context(|| "while getting dir path")?;
+	let dir_path = dir_path
+		.canonicalize()
+		.with_context(|| format!("while canonicalizing {}", dir_path.display()))?;
 
 	let dir = Dir::new(dir_path);
 	let dir = web::Data::new(dir);

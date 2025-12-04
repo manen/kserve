@@ -106,8 +106,11 @@ impl Dir {
 		config: &Config,
 	) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
 		let joined = join_without_escape(&self.path, path)?;
+		println!("{}", joined.display());
 
-		let metadata = tokio::fs::metadata(&path).await?;
+		let metadata = tokio::fs::metadata(&joined)
+			.await
+			.with_context(|| format!("while querying metadata for {}", path.display()))?;
 
 		if metadata.is_dir() {
 			if !config.allow_indexing {
@@ -173,11 +176,13 @@ impl Dir {
 				match html {
 					Ok(a) => Some(a),
 					Err(err) => {
-						eprintln!(
-							"failed to prerender readme for {}:\n{}",
-							joined.display(),
-							err
-						);
+						if false {
+							eprintln!(
+								"failed to prerender readme for {}:\n{}",
+								joined.display(),
+								err
+							);
+						}
 						None
 					}
 				}
