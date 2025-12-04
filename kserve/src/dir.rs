@@ -80,27 +80,32 @@ impl Dir {
 	}
 
 	/// expects absolute, pre-joined path
-	async fn resolve_frame(&self, file_path: &Path) -> Option<anyhow::Result<Frame>> {
+	async fn resolve_frame(&self, file_path: &Path) -> anyhow::Result<Frame> {
 		let mut path = file_path.to_path_buf();
-		path.pop();
-		path.push("_frame.html");
 
-		let file = tokio::fs::read_to_string(&path).await;
-		let file = match file {
-			Ok(a) => a,
-			Err(err) => match err.kind() {
-				ErrorKind::NotFound => return None,
-				_ => {
-					return Some(
-						Err(err).with_context(|| format!("while reading {}", path.display())),
-					);
-				}
-			},
-		};
+		let mut frame = Frame::default();
 
-		let frame = Frame::new(file)
-			.with_context(|| format!("while turning {} into a frame", path.display()));
-		Some(frame)
+		while path.pop() {
+			let frame_path = path.join("_frame.html");
+
+			let file = tokio::fs::read_to_string(&frame_path).await;
+			let file = match file {
+				Ok(a) => a,
+				Err(err) => match err.kind() {
+					ErrorKind::NotFound => continue,
+					_ => {
+						return Err(err)
+							.with_context(|| format!("while reading {}", frame_path.display()));
+					}
+				},
+			};
+
+			let new_frame = Frame::new(file)
+				.with_context(|| format!("while turning {} into a frame", frame_path.display()))?;
+			frame = frame.with_child(&new_frame);
+		}
+
+		Ok(frame)
 	}
 
 	/// expects absolute, pre-joined path
@@ -124,9 +129,7 @@ impl Dir {
 		let (html_body, frame) = tokio::join!(html_body, frame);
 		let (html_body, frame) = (
 			html_body.with_context(|| "while resolving html body")?,
-			frame
-				.unwrap_or_else(|| Ok(Default::default()))
-				.with_context(|| "while reading _frame.html")?,
+			frame.with_context(|| "while reading _frame.html")?,
 		);
 
 		Ok(frame.with_content(&html_body))
