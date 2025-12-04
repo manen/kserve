@@ -147,10 +147,7 @@ impl Dir {
 					})
 					.collect::<String>();
 				let nav = format!(
-					"<div>
-					<div>{}</div>
-					<nav>{entries}</nav>
-				</div>",
+					"<div><div>{}</div><nav>{entries}</nav></div>",
 					path.display()
 				);
 
@@ -158,13 +155,37 @@ impl Dir {
 			};
 			let frame = self.resolve_frame(&joined);
 
-			let (nav, frame) = tokio::join!(nav, frame);
-			let (nav, frame) = (
+			let readme = async {
+				let readme_path = joined.join("README.md");
+				let html = self.handle_md_raw(&readme_path).await;
+
+				match html {
+					Ok(a) => Some(a),
+					Err(err) => {
+						eprintln!(
+							"failed to prerender readme for {}:\n{}",
+							joined.display(),
+							err
+						);
+						None
+					}
+				}
+			};
+
+			let (nav, frame, readme) = tokio::join!(nav, frame, readme);
+			let (nav, frame, readme) = (
 				nav.with_context(|| format!("while creating navbar for {}", joined.display()))?,
 				frame.with_context(|| format!("while resolving frame for {}", joined.display()))?,
+				readme,
 			);
 
-			return Ok(("text/html".into(), frame.with_content(&nav).into()));
+			let readme = readme
+				.map(|rm| format!("<main>{rm}</main>"))
+				.unwrap_or_default();
+
+			let content = format!("<div>{nav} <br> {readme}</div>");
+
+			return Ok(("text/html".into(), frame.with_content(&content).into()));
 		}
 
 		if metadata.is_file() {
