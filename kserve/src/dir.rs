@@ -100,12 +100,23 @@ impl Dir {
 	}
 
 	/// non-absolute, dir-specific path
-	pub async fn handle_path(&self, path: &Path) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
+	pub async fn handle_path(
+		&self,
+		path: &Path,
+		config: &Config,
+	) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
 		let joined = join_without_escape(&self.path, path)?;
 
 		let metadata = tokio::fs::metadata(&path).await?;
 
 		if metadata.is_dir() {
+			if !config.allow_indexing {
+				return Ok((
+					"text/plain".into(),
+					"this server does not allow indexing".into(),
+				));
+			}
+
 			let nav = async {
 				let top = path
 					.iter()

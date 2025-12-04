@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
-	allow_indexing: bool,
+	pub allow_indexing: bool,
 }
 impl Default for Config {
 	fn default() -> Self {

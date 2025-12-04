@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
+use actix_web::{App, HttpResponse, HttpServer, web};
 use anyhow::Context;
 
 pub mod dir;
@@ -17,15 +17,21 @@ const BIND: (&str, u16) = const {
 	("0.0.0.0", port)
 };
 
-#[get("/")]
-async fn index() -> impl Responder {
-	"hello index"
-}
+// #[get("/")]
+// async fn index() -> impl Responder {
+// 	"hello index"
+// }
 
-async fn root_fallback(path: web::Path<String>, dir: web::Data<Dir>) -> HttpResponse {
+async fn root_fallback(
+	path: web::Path<String>,
+	dir: web::Data<Dir>,
+	config: web::Data<Config>,
+) -> HttpResponse {
 	let path = path.into_inner();
+	let path = if path.is_empty() { ".".into() } else { path };
+
 	let path = PathBuf::from(path);
-	let res = dir.handle_path(&path).await;
+	let res = dir.handle_path(&path, config.as_ref()).await;
 
 	match res {
 		Ok((mime, a)) => HttpResponse::Ok().content_type(mime.as_ref()).body(a),
@@ -52,11 +58,13 @@ async fn main() -> anyhow::Result<()> {
 
 	let config = dir.config().await?;
 	println!("{config:#?}");
+	let config = web::Data::new(config);
 
 	let server = HttpServer::new(move || {
 		App::new()
 			.app_data(dir.clone())
-			.service(index)
+			.app_data(config.clone())
+			// .service(index)
 			.route("/{tail:.*}", web::get().to(root_fallback))
 	})
 	.bind(BIND)?
