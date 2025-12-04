@@ -248,6 +248,15 @@ impl Dir {
 	async fn resolve_frame(&self, file_path: &Path) -> anyhow::Result<Frame> {
 		let mut path = file_path.to_path_buf();
 
+		let is_dir = tokio::fs::metadata(&path)
+			.await
+			.map(|md| md.is_dir())
+			.ok()
+			.unwrap_or(false);
+		if is_dir {
+			path.push("you_should_not_see_this_ever_if_you_do_its_a_bug.txt")
+		}
+
 		let mut frame = Frame::default();
 
 		while path.pop() {
