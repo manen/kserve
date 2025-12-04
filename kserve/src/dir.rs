@@ -1,9 +1,12 @@
 use std::{
 	borrow::Cow,
+	io::ErrorKind,
 	path::{Component, Path, PathBuf},
 };
 
 use anyhow::Context;
+
+use crate::Frame;
 
 fn normalize_without_escape(user: &Path) -> Option<PathBuf> {
 	let mut stack = Vec::new();
@@ -28,12 +31,14 @@ fn normalize_without_escape(user: &Path) -> Option<PathBuf> {
 
 fn join_without_escape(a: &Path, untrusted_b: &Path) -> anyhow::Result<PathBuf> {
 	let b = normalize_without_escape(untrusted_b);
-	let b = b.with_context(|| {
-		format!(
-			"failed to normalize {} without it leaking into the outer fs",
-			untrusted_b.display()
-		)
-	})?;
+	let b = b
+		.with_context(|| {
+			format!(
+				"failed to normalize {} without it leaking into the outer fs",
+				untrusted_b.display()
+			)
+		})
+		.with_context(|| format!("while appending it to {}", a.display()))?;
 
 	Ok(a.join(b))
 }
@@ -74,10 +79,33 @@ impl Dir {
 		}
 	}
 
-	async fn handle_md(&self, path: &Path) -> anyhow::Result<String> {
-		let joined = join_without_escape(&self.path, path)?;
+	/// expects absolute, pre-joined path
+	async fn resolve_frame(&self, file_path: &Path) -> Option<anyhow::Result<Frame>> {
+		let mut path = file_path.to_path_buf();
+		path.pop();
+		path.push("_frame.html");
 
-		let md = tokio::fs::read_to_string(&joined)
+		let file = tokio::fs::read_to_string(&path).await;
+		let file = match file {
+			Ok(a) => a,
+			Err(err) => match err.kind() {
+				ErrorKind::NotFound => return None,
+				_ => {
+					return Some(
+						Err(err).with_context(|| format!("while reading {}", path.display())),
+					);
+				}
+			},
+		};
+
+		let frame = Frame::new(file)
+			.with_context(|| format!("while turning {} into a frame", path.display()));
+		Some(frame)
+	}
+
+	/// expects absolute, pre-joined path
+	async fn handle_md_raw(&self, path: &Path) -> anyhow::Result<String> {
+		let md = tokio::fs::read_to_string(&path)
 			.await
 			.with_context(|| format!("while reading {} as string", path.display()))?;
 
@@ -85,6 +113,23 @@ impl Dir {
 		let html = comrak::markdown_to_html(&md, &opts);
 
 		Ok(html)
+	}
+
+	async fn handle_md(&self, path: &Path) -> anyhow::Result<String> {
+		let joined = join_without_escape(&self.path, path)?;
+
+		let html_body = self.handle_md_raw(&joined);
+		let frame = self.resolve_frame(&joined);
+
+		let (html_body, frame) = tokio::join!(html_body, frame);
+		let (html_body, frame) = (
+			html_body.with_context(|| "while resolving html body")?,
+			frame
+				.unwrap_or_else(|| Ok(Default::default()))
+				.with_context(|| "while reading _frame.html")?,
+		);
+
+		Ok(frame.with_content(&html_body))
 	}
 	async fn handle_non_md(&self, path: &Path) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
 		let joined = join_without_escape(&self.path, path)?;

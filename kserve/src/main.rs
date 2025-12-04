@@ -7,6 +7,9 @@ use tokio::sync::Mutex;
 pub mod dir;
 pub use dir::Dir;
 
+pub mod frame;
+pub use frame::Frame;
+
 const BIND: (&str, u16) = const {
 	let port = if cfg!(debug_assertions) { 9090 } else { 9090 };
 	("0.0.0.0", port)
