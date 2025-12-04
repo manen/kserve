@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::Context;
 
-use crate::Frame;
+use crate::{Config, Frame};
 
 fn normalize_without_escape(user: &Path) -> Option<PathBuf> {
 	let mut stack = Vec::new();
@@ -52,6 +52,52 @@ impl Dir {
 		Self { path }
 	}
 
+	pub async fn get_config_only(&self) -> Option<anyhow::Result<Config>> {
+		let config_path = self.path.join("_kserve.toml");
+
+		let file = tokio::fs::read_to_string(&config_path).await;
+		let file = match file {
+			Ok(a) => a,
+			Err(err) => match err.kind() {
+				ErrorKind::NotFound => return None,
+				_ => {
+					return Some(
+						Err(err)
+							.with_context(|| format!("while reading {}", config_path.display())),
+					);
+				}
+			},
+		};
+
+		let parsed: anyhow::Result<Config> = toml::from_str(&file)
+			.with_context(|| format!("while deserializing {}", config_path.display()));
+		Some(parsed)
+	}
+	pub async fn create_config(&self) -> anyhow::Result<()> {
+		let config_path = self.path.join("_kserve.toml");
+
+		let config = Config::default();
+		let file =
+			toml::to_string(&config).with_context(|| format!("while serializing {config:?}"))?;
+
+		tokio::fs::write(&config_path, &file)
+			.await
+			.with_context(|| format!("while writing config to {}", config_path.display()))?;
+
+		Ok(())
+	}
+
+	/// read or create config
+	pub async fn config(&self) -> anyhow::Result<Config> {
+		let config = self.get_config_only().await;
+		match config {
+			Some(a) => return a,
+			None => {
+				self.create_config().await?;
+				Ok(Config::default())
+			}
+		}
+	}
 	/// returns (mime, content)
 	pub async fn handle_file(&self, path: &Path) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
 		// return Ok(("text/plain".into(), format!("{}", path.display()).into()));

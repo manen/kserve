@@ -2,13 +2,15 @@ use std::path::PathBuf;
 
 use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use anyhow::Context;
-use tokio::sync::Mutex;
 
 pub mod dir;
 pub use dir::Dir;
 
 pub mod frame;
 pub use frame::Frame;
+
+pub mod config;
+pub use config::Config;
 
 const BIND: (&str, u16) = const {
 	let port = if cfg!(debug_assertions) { 9090 } else { 9090 };
@@ -47,6 +49,9 @@ async fn main() -> anyhow::Result<()> {
 
 	let dir = Dir::new(dir_path);
 	let dir = web::Data::new(dir);
+
+	let config = dir.config().await?;
+	println!("{config:#?}");
 
 	let server = HttpServer::new(move || {
 		App::new()
