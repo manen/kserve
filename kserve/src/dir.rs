@@ -4,7 +4,7 @@ use std::{
 	path::{Component, Path, PathBuf},
 };
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 
 use crate::{Config, Frame};
 
@@ -98,7 +98,89 @@ impl Dir {
 			}
 		}
 	}
-	/// returns (mime, content)
+
+	/// non-absolute, dir-specific path
+	pub async fn handle_path(&self, path: &Path) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
+		let joined = join_without_escape(&self.path, path)?;
+
+		let metadata = tokio::fs::metadata(&path).await?;
+
+		if metadata.is_dir() {
+			let nav = async {
+				let top = path
+					.iter()
+					.rev()
+					.next()
+					.map(|a| a.to_string_lossy())
+					.map(|a| format!("{a}/"))
+					.unwrap_or_else(String::new);
+
+				let mut readdir = tokio::fs::read_dir(&joined)
+					.await
+					.with_context(|| format!("while reading dir {}", joined.display()))?;
+
+				let mut buf = Vec::new();
+
+				loop {
+					let entry = readdir.next_entry().await.with_context(|| {
+						format!("while reading next entry from readdir {}", joined.display())
+					})?;
+					match entry {
+						Some(entry) => {
+							let name = entry.file_name();
+							let name = name.to_string_lossy();
+							let name = match name {
+								Cow::Borrowed(a) => a.to_string(),
+								Cow::Owned(a) => a,
+							};
+
+							buf.push(name);
+						}
+						None => break,
+					}
+				}
+
+				let entries = buf
+					.into_iter()
+					.map(|filename| {
+						format!("<div><a href=\"{top}{filename}\">{filename}</a></div>")
+					})
+					.collect::<String>();
+				let nav = format!(
+					"<div>
+					<div>{}</div>
+					<nav>{entries}</nav>
+				</div>",
+					path.display()
+				);
+
+				anyhow::Ok(nav)
+			};
+			let frame = self.resolve_frame(&joined);
+
+			let (nav, frame) = tokio::join!(nav, frame);
+			let (nav, frame) = (
+				nav.with_context(|| format!("while creating navbar for {}", joined.display()))?,
+				frame.with_context(|| format!("while resolving frame for {}", joined.display()))?,
+			);
+
+			return Ok(("text/html".into(), frame.with_content(&nav).into()));
+		}
+
+		if metadata.is_file() {
+			return self
+				.handle_file(&joined)
+				.await
+				.with_context(|| format!("while handling {}", path.display()));
+		}
+
+		Err(anyhow!(
+			"this path exists, but it's neither a directory or a file"
+		))
+	}
+
+	/// returns (mime, content) \
+	/// absolute path
 	pub async fn handle_file(&self, path: &Path) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
 		// return Ok(("text/plain".into(), format!("{}", path.display()).into()));
 
@@ -166,11 +248,10 @@ impl Dir {
 		Ok(html)
 	}
 
+	/// absolute path
 	async fn handle_md(&self, path: &Path) -> anyhow::Result<String> {
-		let joined = join_without_escape(&self.path, path)?;
-
-		let html_body = self.handle_md_raw(&joined);
-		let frame = self.resolve_frame(&joined);
+		let html_body = self.handle_md_raw(&path);
+		let frame = self.resolve_frame(&path);
 
 		let (html_body, frame) = tokio::join!(html_body, frame);
 		let (html_body, frame) = (
@@ -180,13 +261,12 @@ impl Dir {
 
 		Ok(frame.with_content(&html_body))
 	}
+	/// absolute path
 	async fn handle_non_md(&self, path: &Path) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
-		let joined = join_without_escape(&self.path, path)?;
-
 		let mime = mime_guess::from_path(path).first_or_octet_stream();
 		let mime = mime.essence_str();
 
-		let content = tokio::fs::read(&joined)
+		let content = tokio::fs::read(&path)
 			.await
 			.with_context(|| format!("while reading {} as binary", path.display()))?;
 
