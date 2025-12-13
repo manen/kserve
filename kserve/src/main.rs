@@ -34,7 +34,8 @@ async fn root_fallback(
 	let res = dir.handle_path(&path, config.as_ref()).await;
 
 	match res {
-		Ok((mime, a)) => HttpResponse::Ok().content_type(mime.as_ref()).body(a),
+		// Ok((mime, a)) => HttpResponse::Ok().content_type(mime.as_ref()).body(a),
+		Ok(resp) => resp,
 		Err(err) => {
 			let err = format!("{err}\n\n{err:#?}");
 			HttpResponse::BadRequest().body(err)

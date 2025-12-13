@@ -4,6 +4,7 @@ use std::{
 	path::{Component, Path, PathBuf},
 };
 
+use actix_web::HttpResponse;
 use anyhow::{Context, anyhow};
 
 use crate::{Config, Frame};
@@ -100,11 +101,7 @@ impl Dir {
 	}
 
 	/// non-absolute, dir-specific path
-	pub async fn handle_path(
-		&self,
-		path: &Path,
-		config: &Config,
-	) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
+	pub async fn handle_path(&self, path: &Path, config: &Config) -> anyhow::Result<HttpResponse> {
 		let joined = join_without_escape(&self.path, path)?;
 		println!("{}", joined.display());
 
@@ -114,10 +111,9 @@ impl Dir {
 
 		if metadata.is_dir() {
 			if !config.allow_indexing {
-				return Ok((
-					"text/plain".into(),
-					"this server does not allow indexing".into(),
-				));
+				let (mime, content) = ("text/plain", "this server does not allow indexing");
+				let resp = HttpResponse::BadRequest().content_type(mime).body(content);
+				return Ok(resp);
 			}
 
 			let nav = async {
@@ -201,7 +197,9 @@ impl Dir {
 
 			let content = format!("<div>{nav} <br> {readme}</div>");
 
-			return Ok(("text/html".into(), frame.with_content(&content).into()));
+			let (mime, content) = ("text/html", frame.with_content(&content));
+			let resp = HttpResponse::Ok().content_type(mime).body(content);
+			return Ok(resp);
 		}
 
 		if metadata.is_file() {
@@ -218,7 +216,7 @@ impl Dir {
 
 	/// returns (mime, content) \
 	/// absolute path
-	pub async fn handle_file(&self, path: &Path) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
+	pub async fn handle_file(&self, path: &Path) -> anyhow::Result<HttpResponse> {
 		// return Ok(("text/plain".into(), format!("{}", path.display()).into()));
 
 		let handle_as_md = path
@@ -233,14 +231,20 @@ impl Dir {
 				.await
 				.with_context(|| format!("while handling {} as markdown", path.display()))?;
 
-			Ok(("text/html".into(), html.into()))
+			let resp = HttpResponse::Ok().content_type("text/html").body(html);
+			Ok(resp)
 		} else {
-			let (mime, content) = self
+			let (mime, file) = self
 				.handle_non_md(path)
 				.await
 				.with_context(|| format!("while handling {} as non md", path.display()))?;
 
-			Ok((mime, content))
+			let stream = tokio_util::io::ReaderStream::new(file);
+
+			let resp = HttpResponse::Ok()
+				.content_type(mime.as_ref())
+				.streaming(stream);
+			Ok(resp)
 		}
 	}
 
@@ -308,14 +312,18 @@ impl Dir {
 		Ok(frame.with_content(&html_body))
 	}
 	/// absolute path
-	async fn handle_non_md(&self, path: &Path) -> anyhow::Result<(Cow<'static, str>, Vec<u8>)> {
+	async fn handle_non_md(
+		&self,
+		path: &Path,
+	) -> anyhow::Result<(Cow<'static, str>, tokio::fs::File)> {
 		let mime = mime_guess::from_path(path).first_or_octet_stream();
-		let mime = mime.essence_str();
 
-		let content = tokio::fs::read(&path)
+		let file = tokio::fs::OpenOptions::new()
+			.read(true)
+			.open(path)
 			.await
-			.with_context(|| format!("while reading {} as binary", path.display()))?;
+			.with_context(|| format!("failed to open {} to read", path.display()))?;
 
-		Ok((mime.to_string().into(), content))
+		Ok((mime.to_string().into(), file))
 	}
 }
