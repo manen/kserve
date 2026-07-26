@@ -3,8 +3,6 @@ use std::{borrow::Cow, path::Path};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::config;
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
 	pub addr: Cow<'static, str>,
