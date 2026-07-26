@@ -12,11 +12,6 @@ pub use frame::Frame;
 pub mod config;
 pub use config::Config;
 
-const BIND: (&str, u16) = const {
-	let port = if cfg!(debug_assertions) { 9090 } else { 9090 };
-	("0.0.0.0", port)
-};
-
 // #[get("/")]
 // async fn index() -> impl Responder {
 // 	"hello index"
@@ -48,21 +43,38 @@ async fn main() -> anyhow::Result<()> {
 	let mut args = std::env::args();
 	let _ = args.next();
 
-	let dir_path = args
+	let default_path = || {
+		let cwd = std::env::current_dir()?;
+		let config_path = cwd.join("_kserve.toml");
+		std::io::Result::Ok(config_path)
+	};
+
+	let config_path = args
 		.next()
 		.map(|s| Ok(PathBuf::from(s)))
-		.unwrap_or_else(std::env::current_dir)
+		.unwrap_or_else(default_path)
 		.with_context(|| "while getting dir path")?;
-	let dir_path = dir_path
-		.canonicalize()
-		.with_context(|| format!("while canonicalizing {}", dir_path.display()))?;
+
+	let config = Config::new(&config_path)
+		.await
+		.with_context(|| format!("while reading config from {}", config_path.display()))?;
+
+	// config is read, time to set up the serving directory
+
+	let dir_path_maybe_relative = PathBuf::from(config.serve_directory.as_ref());
+	let dir_path = std::fs::canonicalize(&dir_path_maybe_relative).with_context(|| {
+		format!(
+			"while canonicalizing the dir path {}",
+			dir_path_maybe_relative.display()
+		)
+	})?;
 
 	let dir = Dir::new(dir_path);
 	let dir = web::Data::new(dir);
 
-	let config = dir.config().await?;
 	println!("{config:#?}");
 	let config = web::Data::new(config);
+	let bind = (config.addr.to_owned(), config.port);
 
 	let server = HttpServer::new(move || {
 		App::new()
@@ -71,9 +83,9 @@ async fn main() -> anyhow::Result<()> {
 			// .service(index)
 			.route("/{tail:.*}", web::get().to(root_fallback))
 	})
-	.bind(BIND)?
+	.bind((bind.0.as_ref(), bind.1))?
 	.run();
-	println!("listening on http://{}:{}", BIND.0, BIND.1);
+	println!("listening on http://{}:{}", bind.0, bind.1);
 
 	server.await?;
 	Ok(())

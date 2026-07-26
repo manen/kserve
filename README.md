@@ -9,10 +9,11 @@ download rust, clone, build and run
 by default, it'll serve the current working directory, can be overridden with:
 
 ```
-kserve /path/to/directory/to/serve
+kserve /path/to/kserve/config/_kserve.toml
 ```
 
-it'll create a config file in the serve dir
+it'll create a config file at the path given.
+go ahead and modify the config after it's been created because it contains which directory to serve. don't leave that at the default!
 
 allows indexing by default, can be turned off
 

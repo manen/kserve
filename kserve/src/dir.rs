@@ -53,53 +53,6 @@ impl Dir {
 		Self { path }
 	}
 
-	pub async fn get_config_only(&self) -> Option<anyhow::Result<Config>> {
-		let config_path = self.path.join("_kserve.toml");
-
-		let file = tokio::fs::read_to_string(&config_path).await;
-		let file = match file {
-			Ok(a) => a,
-			Err(err) => match err.kind() {
-				ErrorKind::NotFound => return None,
-				_ => {
-					return Some(
-						Err(err)
-							.with_context(|| format!("while reading {}", config_path.display())),
-					);
-				}
-			},
-		};
-
-		let parsed: anyhow::Result<Config> = toml::from_str(&file)
-			.with_context(|| format!("while deserializing {}", config_path.display()));
-		Some(parsed)
-	}
-	pub async fn create_config(&self) -> anyhow::Result<()> {
-		let config_path = self.path.join("_kserve.toml");
-
-		let config = Config::default();
-		let file =
-			toml::to_string(&config).with_context(|| format!("while serializing {config:?}"))?;
-
-		tokio::fs::write(&config_path, &file)
-			.await
-			.with_context(|| format!("while writing config to {}", config_path.display()))?;
-
-		Ok(())
-	}
-
-	/// read or create config
-	pub async fn config(&self) -> anyhow::Result<Config> {
-		let config = self.get_config_only().await;
-		match config {
-			Some(a) => return a,
-			None => {
-				self.create_config().await?;
-				Ok(Config::default())
-			}
-		}
-	}
-
 	/// non-absolute, dir-specific path
 	pub async fn handle_path(&self, path: &Path, config: &Config) -> anyhow::Result<HttpResponse> {
 		let joined = join_without_escape(&self.path, path)?;
@@ -110,96 +63,10 @@ impl Dir {
 			.with_context(|| format!("while querying metadata for {}", path.display()))?;
 
 		if metadata.is_dir() {
-			if !config.allow_indexing {
-				let (mime, content) = ("text/plain", "this server does not allow indexing");
-				let resp = HttpResponse::BadRequest().content_type(mime).body(content);
-				return Ok(resp);
-			}
-
-			let nav = async {
-				let top = path
-					.iter()
-					.rev()
-					.next()
-					.map(|a| a.to_string_lossy())
-					.map(|a| format!("{a}/"))
-					.unwrap_or_else(String::new);
-
-				let mut readdir = tokio::fs::read_dir(&joined)
-					.await
-					.with_context(|| format!("while reading dir {}", joined.display()))?;
-
-				let mut buf = Vec::new();
-
-				loop {
-					let entry = readdir.next_entry().await.with_context(|| {
-						format!("while reading next entry from readdir {}", joined.display())
-					})?;
-					match entry {
-						Some(entry) => {
-							let name = entry.file_name();
-							let name = name.to_string_lossy();
-							let name = match name {
-								Cow::Borrowed(a) => a.to_string(),
-								Cow::Owned(a) => a,
-							};
-
-							buf.push(name);
-						}
-						None => break,
-					}
-				}
-
-				let entries = buf
-					.into_iter()
-					.map(|filename| {
-						format!("<div><a href=\"{top}{filename}\">{filename}</a></div>")
-					})
-					.collect::<String>();
-				let nav = format!(
-					"<div><div>{}</div><nav>{entries}</nav></div>",
-					path.display()
-				);
-
-				anyhow::Ok(nav)
-			};
-			let frame = self.resolve_frame(&joined);
-
-			let readme = async {
-				let readme_path = joined.join("README.md");
-				let html = self.handle_md_raw(&readme_path).await;
-
-				match html {
-					Ok(a) => Some(a),
-					Err(err) => {
-						if false {
-							eprintln!(
-								"failed to prerender readme for {}:\n{}",
-								joined.display(),
-								err
-							);
-						}
-						None
-					}
-				}
-			};
-
-			let (nav, frame, readme) = tokio::join!(nav, frame, readme);
-			let (nav, frame, readme) = (
-				nav.with_context(|| format!("while creating navbar for {}", joined.display()))?,
-				frame.with_context(|| format!("while resolving frame for {}", joined.display()))?,
-				readme,
-			);
-
-			let readme = readme
-				.map(|rm| format!("<main>{rm}</main>"))
-				.unwrap_or_default();
-
-			let content = format!("<div>{nav} <br> {readme}</div>");
-
-			let (mime, content) = ("text/html", frame.with_content(&content));
-			let resp = HttpResponse::Ok().content_type(mime).body(content);
-			return Ok(resp);
+			return self
+				.handle_dir(path, &joined, config)
+				.await
+				.with_context(|| format!("while handling {}", path.display()));
 		}
 
 		if metadata.is_file() {
@@ -214,7 +81,106 @@ impl Dir {
 		))
 	}
 
-	/// returns (mime, content) \
+	/// absolute path
+	pub async fn handle_dir(
+		&self,
+		path: &Path,
+		path_abs: &Path,
+		config: &Config,
+	) -> anyhow::Result<HttpResponse> {
+		if !config.allow_indexing {
+			let (mime, content) = ("text/plain", "this server does not allow indexing");
+			let resp = HttpResponse::BadRequest().content_type(mime).body(content);
+			return Ok(resp);
+		}
+
+		let nav = async {
+			let top = path
+				.iter()
+				.rev()
+				.next()
+				.map(|a| a.to_string_lossy())
+				.map(|a| format!("{a}/"))
+				.unwrap_or_else(String::new);
+
+			let mut readdir = tokio::fs::read_dir(&path_abs)
+				.await
+				.with_context(|| format!("while reading dir {}", path_abs.display()))?;
+
+			let mut buf = Vec::new();
+
+			loop {
+				let entry = readdir.next_entry().await.with_context(|| {
+					format!(
+						"while reading next entry from readdir {}",
+						path_abs.display()
+					)
+				})?;
+				match entry {
+					Some(entry) => {
+						let name = entry.file_name();
+						let name = name.to_string_lossy();
+						let name = match name {
+							Cow::Borrowed(a) => a.to_string(),
+							Cow::Owned(a) => a,
+						};
+
+						buf.push(name);
+					}
+					None => break,
+				}
+			}
+
+			let entries = buf
+				.into_iter()
+				.map(|filename| format!("<div><a href=\"{top}{filename}\">{filename}</a></div>"))
+				.collect::<String>();
+			let nav = format!(
+				"<div><div>{}</div><nav>{entries}</nav></div>",
+				path.display()
+			);
+
+			anyhow::Ok(nav)
+		};
+		let frame = self.resolve_frame(&path_abs);
+
+		let readme = async {
+			let readme_path = path_abs.join("README.md");
+			let html = self.handle_md_raw(&readme_path).await;
+
+			match html {
+				Ok(a) => Some(a),
+				Err(err) => {
+					if false {
+						eprintln!(
+							"failed to prerender readme for {}:\n{}",
+							path_abs.display(),
+							err
+						);
+					}
+					None
+				}
+			}
+		};
+
+		let (nav, frame, readme) = tokio::join!(nav, frame, readme);
+		let (nav, frame, readme) = (
+			nav.with_context(|| format!("while creating navbar for {}", path_abs.display()))?,
+			frame.with_context(|| format!("while resolving frame for {}", path_abs.display()))?,
+			readme,
+		);
+
+		let readme = readme
+			.map(|rm| format!("<main>{rm}</main>"))
+			.unwrap_or_default();
+
+		let content = format!("<div>{nav} <br> {readme}</div>");
+
+		let (mime, content) = ("text/html", frame.with_content(&content));
+		let resp = HttpResponse::Ok().content_type(mime).body(content);
+		return Ok(resp);
+	}
+
 	/// absolute path
 	pub async fn handle_file(&self, path: &Path) -> anyhow::Result<HttpResponse> {
 		// return Ok(("text/plain".into(), format!("{}", path.display()).into()));
